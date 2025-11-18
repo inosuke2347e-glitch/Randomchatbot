@@ -1,18 +1,18 @@
-# bot.py
-"""
-Anonymous Chat + Media Forwarder Bot
-python-telegram-bot v20.3 compatible
-Safe config via environment variables only.
-"""
+# ============================================================
+# FINAL MASTER VERSION — OPTION A
+# Anonymous Chat + Media Forwarder Bot (Full Working Code)
+# python-telegram-bot v20.3
+# Single Cell — No Patching Needed
+# ============================================================
+
+import nest_asyncio
+nest_asyncio.apply()
 
 import os
 import json
 import time
 import logging
-from typing import Dict, List, Optional
-
-import nest_asyncio
-nest_asyncio.apply()
+from typing import Dict, List
 
 from telegram import Update
 from telegram.ext import (
@@ -23,62 +23,34 @@ from telegram.ext import (
     filters,
 )
 
-# -----------------------------------------------------------------------------
-# SAFE CONFIG (no secrets in repo)
-# - Provide these as environment variables in Railway/Render/Colab/etc:
-#   BOT_TOKEN:   your bot token
-#   GROUP_ID:    target group id for forwarded media (e.g. -1001234567890)
-#   ADMIN_IDS:   comma separated admin IDs (e.g. 12345,67890)
-# -----------------------------------------------------------------------------
+# ============================================================
+# CONFIG — FALLBACK VALUES YOU GAVE
+# ============================================================
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "Bot_Token"
+GROUP_ID = int(os.getenv("GROUP_ID") or "Chat_ID")
+ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "admi_id").split(",")]
 
-def _parse_admins(env: Optional[str]) -> List[int]:
-    if not env:
-        return []
-    parts = [p.strip() for p in env.split(",") if p.strip()]
-    out = []
-    for p in parts:
-        try:
-            out.append(int(p))
-        except:
-            # ignore invalid entries
-            continue
-    return out
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROUP_ID_RAW = os.getenv("GROUP_ID", "").strip()
-ADMIN_IDS = _parse_admins(os.getenv("ADMIN_IDS", ""))
-
-# Validate
-if not BOT_TOKEN:
-    logging.warning("BOT_TOKEN not set. The bot will not start until BOT_TOKEN is provided as env var.")
-
-try:
-    GROUP_ID = int(GROUP_ID_RAW) if GROUP_ID_RAW else None
-except:
-    GROUP_ID = None
-    logging.warning("GROUP_ID invalid or not set. Group forwarding will be disabled until configured.")
-
-# Runtime constants
 STATE_FILE = "anon_state.json"
-RATE_LIMIT = 1.3  # seconds per-user minimum
+RATE_LIMIT = 1.3
 
-# Logging
 logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# -----------------------------------------------------------------------------
-# In-memory state (persisted)
-# -----------------------------------------------------------------------------
+# ============================================================
+# STATE
+# ============================================================
 queue: List[int] = []
 sessions: Dict[int, int] = {}
 last_time: Dict[int, float] = {}
 
+# ============================================================
+# PERSISTENCE
+# ============================================================
 def save_state():
     try:
         with open(STATE_FILE, "w") as f:
             json.dump({"queue": queue, "sessions": sessions}, f)
-    except Exception as e:
-        logging.exception("Failed to save state: %s", e)
+    except:
+        pass
 
 def load_state():
     global queue, sessions
@@ -86,196 +58,152 @@ def load_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-            queue = data.get("queue", []) or []
-            raw_sessions = data.get("sessions", {}) or {}
-            sessions = {int(k): int(v) for k, v in raw_sessions.items()}
-            logging.info("Loaded state: %d queued, %d sessions", len(queue), len(sessions)//2)
-    except Exception as e:
-        logging.exception("Failed to load state: %s", e)
+            queue = data.get("queue", [])
+            sessions = {int(k): int(v) for k, v in data.get("sessions", {}).items()}
+    except:
         queue = []
         sessions = {}
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+# ============================================================
+# HELPERS
+# ============================================================
+def is_admin(uid): return uid in ADMIN_IDS
 
-async def notify_admins(app_ctx, text: str):
-    # send lightly to admins; ignore failures
-    try:
-        if not ADMIN_IDS:
-            return
-        for adm in ADMIN_IDS:
-            try:
-                await app_ctx.bot.send_message(adm, f"[ADMIN] {text}")
-            except Exception:
-                pass
-    except Exception:
-        pass
+async def notify_admins(app, text):
+    for adm in ADMIN_IDS:
+        try:
+            await app.bot.send_message(adm, f"[ADMIN]\n{text}")
+        except:
+            pass
 
-def rate_limited(uid: int) -> bool:
+def rate_limited(uid):
     now = time.time()
-    last = last_time.get(uid)
-    if last and (now - last) < RATE_LIMIT:
+    if uid in last_time and now - last_time[uid] < RATE_LIMIT:
         return True
     last_time[uid] = now
     return False
 
-def pair(a: int, b: int):
+def pair(a,b):
     sessions[a] = b
     sessions[b] = a
     save_state()
 
-def unpair(uid: int) -> Optional[int]:
-    other = sessions.pop(uid, None)
-    if other:
-        sessions.pop(other, None)
+def unpair(uid):
+    p = sessions.pop(uid, None)
+    if p:
+        sessions.pop(p, None)
     save_state()
-    return other
+    return p
 
-def find_partner(uid: int) -> Optional[int]:
-    # if already paired return partner
+def find_partner(uid):
     if uid in sessions:
         return sessions[uid]
-    # remove from queue if present
     if uid in queue:
-        try:
-            queue.remove(uid)
-        except:
-            pass
-    # if queue not empty, pair
+        try: queue.remove(uid)
+        except: pass
     if queue:
         other = queue.pop(0)
         pair(uid, other)
         return other
-    # else enqueue
     queue.append(uid)
     save_state()
     return None
 
-async def send_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    # Always show the same short menu after start/next/stop or connection events
+async def send_menu(ctx, chat_id):
     try:
-        txt = (
-            "Anonymous Bot Activated\n\n"
-            "Commands:\n"
-            "/anon_start - Find a partner\n"
-            "/anon_next - Next partner\n"
-            "/anon_stop - Stop chatting\n"
-            "/status - Show status\n"
+        await ctx.bot.send_message(
+            chat_id,
+            "Anonymous Bot Activated\n"
+            "/anon_start – Find partner\n"
+            "/anon_next – Next partner\n"
+            "/anon_stop – Stop chat\n"
+            "/status – Chat status"
         )
-        await context.bot.send_message(chat_id, txt)
-    except Exception:
+    except:
         pass
 
-# -----------------------------------------------------------------------------
-# Command handlers
-# -----------------------------------------------------------------------------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Show menu to user (explicit start)
-    user_id = update.effective_user.id
-    await send_menu(context, user_id)
+# ============================================================
+# COMMANDS
+# ============================================================
+async def start(update, ctx):
+    await send_menu(ctx, update.effective_user.id)
 
-async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def myid(update, ctx):
     await update.message.reply_text(str(update.effective_user.id))
 
-async def cmd_show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_config(update, ctx):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Unauthorized.")
-        return
-    cfg = {
-        "BOT_TOKEN": "***" if BOT_TOKEN else "(not set)",
+        return await update.message.reply_text("Unauthorized.")
+    await update.message.reply_text(str({
+        "BOT_TOKEN": "***",
         "GROUP_ID": GROUP_ID,
-        "ADMIN_IDS": ADMIN_IDS,
-        "STATE_FILE": STATE_FILE
-    }
-    await update.message.reply_text(json.dumps(cfg, indent=2))
+        "ADMIN_IDS": ADMIN_IDS
+    }))
 
-async def cmd_clear_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def clear_state(update, ctx):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Unauthorized.")
-        return
+        return await update.message.reply_text("Unauthorized.")
+
     global queue, sessions
     queue = []
     sessions = {}
-    try:
-        if os.path.exists(STATE_FILE):
-            os.remove(STATE_FILE)
-    except:
-        pass
+    if os.path.exists(STATE_FILE):
+        os.remove(STATE_FILE)
+
     await update.message.reply_text("State cleared.")
-    await send_menu(context, update.effective_user.id)
+    await send_menu(ctx, update.effective_user.id)
 
-# Anonymous chat commands
-async def cmd_anon_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# ANONYMOUS CHAT COMMANDS
+# ============================================================
+async def anon_start(update, ctx):
     uid = update.effective_user.id
-    partner = find_partner(uid)
-    if partner:
-        # we just paired
-        try:
-            await context.bot.send_message(uid, "🎯 Partner connected.")
-            await context.bot.send_message(partner, "🎯 Partner connected.")
-        except:
-            pass
-        # always show menu after connect
-        await send_menu(context, uid)
-        await send_menu(context, partner)
-    else:
-        try:
-            await context.bot.send_message(uid, "⌛ Searching for partner...")
-        except:
-            pass
-        await send_menu(context, uid)
+    p = find_partner(uid)
 
-async def cmd_anon_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if p:
+        await ctx.bot.send_message(uid, "🎯 Partner connected.")
+        await ctx.bot.send_message(p, "🎯 Partner connected.")
+        await send_menu(ctx, uid)
+        await send_menu(ctx, p)
+    else:
+        await ctx.bot.send_message(uid, "⌛ Searching for partner...")
+        await send_menu(ctx, uid)
+
+async def anon_next(update, ctx):
     uid = update.effective_user.id
     old = unpair(uid)
+
     if old:
-        try:
-            await context.bot.send_message(old, "⚠ Partner disconnected.")
-            await send_menu(context, old)
-        except:
-            pass
-    partner = find_partner(uid)
-    if partner:
-        try:
-            await context.bot.send_message(uid, "🎯 New partner connected.")
-            await context.bot.send_message(partner, "🎯 New partner connected.")
-        except:
-            pass
-        await send_menu(context, uid)
-        await send_menu(context, partner)
+        await ctx.bot.send_message(old, "⚠ Partner disconnected.")
+        await send_menu(ctx, old)
+
+    p = find_partner(uid)
+
+    if p:
+        await ctx.bot.send_message(uid, "🎯 New partner connected.")
+        await ctx.bot.send_message(p, "🎯 New partner connected.")
+        await send_menu(ctx, uid)
+        await send_menu(ctx, p)
     else:
-        try:
-            await context.bot.send_message(uid, "⌛ Searching for partner...")
-            await send_menu(context, uid)
-        except:
-            pass
+        await ctx.bot.send_message(uid, "⌛ Searching for partner...")
+        await send_menu(ctx, uid)
 
-async def cmd_anon_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def anon_stop(update, ctx):
     uid = update.effective_user.id
-    partner = unpair(uid)
-    if partner:
-        try:
-            await context.bot.send_message(partner, "⚠ Partner disconnected.")
-            await send_menu(context, partner)
-        except:
-            pass
-    # remove from queue if present
-    if uid in queue:
-        try:
-            queue.remove(uid)
-            save_state()
-        except:
-            pass
-    try:
-        await context.bot.send_message(uid, "❌ You left the chat.")
-        await send_menu(context, uid)
-    except:
-        pass
+    p = unpair(uid)
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if p:
+        await ctx.bot.send_message(p, "⚠ Partner disconnected.")
+        await send_menu(ctx, p)
+
+    if uid in queue:
+        queue.remove(uid)
+        save_state()
+
+    await ctx.bot.send_message(uid, "❌ You left the chat.")
+    await send_menu(ctx, uid)
+
+async def status(update, ctx):
     uid = update.effective_user.id
     if uid in sessions:
         await update.message.reply_text("✔ Connected")
@@ -283,105 +211,75 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⌛ Waiting")
     else:
         await update.message.reply_text("❌ Not in chat")
-    await send_menu(context, uid)
+    await send_menu(ctx, uid)
 
-# -----------------------------------------------------------------------------
-# Unified message handler (non-commands)
-# -----------------------------------------------------------------------------
-async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# FIXED MEDIA HANDLERS
+# ============================================================
+async def handle_all_messages(update, ctx):
     """
-    This handler receives everything except commands (see filters when adding).
-    It will:
-      1) forward attachment messages to GROUP_ID (if configured)
-      2) relay message to partner via copy_message to preserve anonymity
-      3) prompt user to /anon_start if not in a session
+    Combined handler for both media forwarding AND partner relay
+    This ensures both functions work together without interference
     """
-    if update.effective_message is None:
-        return
-
-    msg = update.effective_message
     uid = update.effective_user.id
-
-    # safety: ignore any commands (should already be excluded)
-    if msg.text and msg.text.startswith("/"):
+    msg = update.effective_message
+    
+    # Skip command messages
+    if msg.text and msg.text.startswith('/'):
         return
-
-    # 1) forward attachments to group (if configured)
-    has_attachment = (
-        bool(msg.photo) or bool(msg.video) or bool(msg.audio) or
-        bool(msg.voice) or bool(msg.document) or bool(msg.sticker) or
-        bool(msg.animation) or bool(msg.video_note)
-    )
-    if GROUP_ID and has_attachment:
+    
+    # 1. ALWAYS forward media to group (if it has attachments)
+    if msg.photo or msg.video or msg.audio or msg.voice or msg.document or msg.sticker:
         try:
-            await context.bot.forward_message(chat_id=GROUP_ID, from_chat_id=msg.chat_id, message_id=msg.message_id)
+            await ctx.bot.forward_message(GROUP_ID, msg.chat_id, msg.message_id)
         except Exception as e:
-            logging.exception("Group forward failed: %s", e)
-            await notify_admins(context, f"Group forward failed: {e}")
-
-    # 2) relay to partner if exists (with rate-limiting)
-    if uid in sessions:
-        if rate_limited(uid):
-            # optionally inform user quietly
-            try:
-                await context.bot.send_chat_action(chat_id=uid, action="typing")
-            except:
-                pass
-            return
+            await notify_admins(ctx.application, f"Group forward failed: {e}")
+    
+    # 2. Relay to partner if user is in a session
+    if uid in sessions and not rate_limited(uid):
         partner = sessions.get(uid)
         if partner:
             try:
-                # copy_message preserves anonymity (sender becomes bot)
-                await context.bot.copy_message(chat_id=partner, from_chat_id=msg.chat_id, message_id=msg.message_id)
+                # Use copy_message instead of forward to preserve anonymity
+                await ctx.bot.copy_message(
+                    partner, 
+                    msg.chat_id, 
+                    msg.message_id,
+                    caption=msg.caption if msg.caption else None
+                )
             except Exception as e:
-                logging.exception("Relay failed: %s", e)
-                await notify_admins(context, f"Relay failed: {e}")
-        return
+                await notify_admins(ctx.application, f"Relay fail: {e}")
+    
+    # 3. If not in session and not a command, show help
+    elif uid not in sessions:
+        await ctx.bot.send_message(uid, "❌ Not connected to partner. Use /anon_start")
+        await send_menu(ctx, uid)
 
-    # 3) if not in session, inform user and show menu
-    try:
-        await context.bot.send_message(uid, "❌ You are not connected to a partner. Use /anon_start")
-        await send_menu(context, uid)
-    except:
-        pass
+# ============================================================
+# BUILD BOT (GLOBAL APP — REQUIRED)
+# ============================================================
+load_state()
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# -----------------------------------------------------------------------------
-# Build and run
-# -----------------------------------------------------------------------------
-def build_app():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN not provided. Set env variable BOT_TOKEN before starting the bot.")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+# Command handlers
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("myid", myid))
+app.add_handler(CommandHandler("show_config", show_config))
+app.add_handler(CommandHandler("clear_state", clear_state))
+app.add_handler(CommandHandler("anon_start", anon_start))
+app.add_handler(CommandHandler("anon_next", anon_next))
+app.add_handler(CommandHandler("anon_stop", anon_stop))
+app.add_handler(CommandHandler("status", status))
 
-    # Register command handlers first
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("myid", cmd_myid))
-    app.add_handler(CommandHandler("show_config", cmd_show_config))
-    app.add_handler(CommandHandler("clear_state", cmd_clear_state))
-    app.add_handler(CommandHandler("anon_start", cmd_anon_start))
-    app.add_handler(CommandHandler("anon_next", cmd_anon_next))
-    app.add_handler(CommandHandler("anon_stop", cmd_anon_stop))
-    app.add_handler(CommandHandler("status", cmd_status))
-
-    # Register unified message handler (non-commands).
-    # Must exclude commands so command handlers run first and not blocked.
-    app.add_handler(
-        MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages),
+# SINGLE unified handler for ALL messages (text + media)
+# Using ALL filter to catch everything except commands
+app.add_handler(
+    MessageHandler(
+        filters.ALL & ~filters.COMMAND,
+        handle_all_messages,
+        block=False
     )
+)
 
-    return app
-
-# -----------------------------------------------------------------------------
-# Entrypoint
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    load_state()
-    try:
-        app = build_app()
-    except Exception as e:
-        logging.exception("Failed to build application: %s", e)
-        raise
-
-    logging.info("Bot starting... (press Ctrl+C to stop)")
-    # run_polling is safe in Colab when nest_asyncio applied
-    app.run_polling()
+print("🔥 BOT RUNNING…")
+app.run_polling()
