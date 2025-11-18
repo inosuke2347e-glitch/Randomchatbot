@@ -27,8 +27,8 @@ from telegram.ext import (
 # CONFIG — FALLBACK VALUES YOU GAVE
 # ============================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "Bot_Token"
-GROUP_ID = int(os.getenv("GROUP_ID") or "Chat_ID")
-ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "admi_id").split(",")]
+GROUP_ID = int(os.getenv("GROUP_ID") or "GROUP_ID")
+ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_ID") or "admi_id").split(",")]
 
 STATE_FILE = "anon_state.json"
 RATE_LIMIT = 1.3
