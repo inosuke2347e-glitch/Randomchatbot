@@ -26,7 +26,7 @@ from telegram.ext import (
 # ============================================================
 # CONFIG — FALLBACK VALUES YOU GAVE
 # ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "Bot_Token"
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "BOT_TOKEN"
 GROUP_ID = int(os.getenv("GROUP_ID") or "GROUP_ID")
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_ID") or "admi_id").split(",")]
 
