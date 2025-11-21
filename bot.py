@@ -12,7 +12,7 @@ import os
 import json
 import time
 import logging
-import imgdb
+from src import imgdb
 from typing import Dict, List
 
 from telegram import Update
