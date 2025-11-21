@@ -1,2 +1,2 @@
-!pip install python-telegram-bot==20.3 --no-deps -q
-!pip install httpx==0.27.0 nest_asyncio -q
+python-telegram-bot==20.3
+nest-asyncio
